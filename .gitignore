@@ -1,0 +1,17 @@
+# Dependencies & build
+node_modules/
+dist/
+*.local
+.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Extra markdown (keep root README only)
+*.md
+!README.md

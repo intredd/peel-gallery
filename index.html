@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Peel Gallery</title>
+    <meta
+      name="description"
+      content="Infinite horizontal gallery with a column peel — scale map tuned live."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fragment+Mono:wght@400&family=Syne:wght@500;700;800&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="page">
+      <header class="intro">
+        <p class="meta">peel gallery</p>
+        <h1 class="title">Peel Gallery</h1>
+        <p class="lede">
+          Infinite strip with a live WebGL peel — full scale in the center,
+          falloff on the sides. Tune the scale map (top right).
+        </p>
+      </header>
+
+      <div class="gallery-shell" data-peel-root>
+        <div class="gallery" data-gallery-scroller>
+          <div class="gallery__track" data-peel-track>
+            <figure class="shot shot--1">
+              <span class="shot__index">01</span>
+              <figcaption class="shot__cap">North light</figcaption>
+            </figure>
+            <figure class="shot shot--2">
+              <span class="shot__index">02</span>
+              <figcaption class="shot__cap">Glass atrium</figcaption>
+            </figure>
+            <figure class="shot shot--3">
+              <span class="shot__index">03</span>
+              <figcaption class="shot__cap">Late grain</figcaption>
+            </figure>
+            <figure class="shot shot--4">
+              <span class="shot__index">04</span>
+              <figcaption class="shot__cap">Steel rim</figcaption>
+            </figure>
+            <figure class="shot shot--5">
+              <span class="shot__index">05</span>
+              <figcaption class="shot__cap">Soft field</figcaption>
+            </figure>
+            <figure class="shot shot--6">
+              <span class="shot__index">06</span>
+              <figcaption class="shot__cap">Ink tide</figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+
+      <p class="hint">Drag · click a card to center it</p>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
