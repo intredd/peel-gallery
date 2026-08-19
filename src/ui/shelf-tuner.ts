@@ -50,20 +50,15 @@ type PlotGeom = {
   shoulder: number;
   centerS: number;
   edgeS: number;
-  /** Plot Y floor (min allowed ratio). */
   yMin: number;
   toX: (x: number) => number;
-  /** Map scale s∈[yMin,1] → canvas Y (1 at top). */
   toY: (s: number) => number;
   fromX: (px: number) => number;
   fromY: (py: number) => number;
   handles: Record<DragTarget, { x: number; y: number }>;
 };
 
-/**
- * Top-right field chart: drag handles + linked number fields.
- * Center / Edge scales are independent — center may be smaller than edges.
- */
+// Top-right scale chart — drag handles + number fields.
 export function mountShelfTuner(
   field: ShelfFieldParams,
   options: ShelfTunerOptions = {},
@@ -151,7 +146,7 @@ export function mountShelfTuner(
     redraw();
   }
 
-  /** Align plot frame top/bottom with first/last input underlines. */
+  // line up plot with input underlines
   function measurePlotPads(): { padTop: number; padBottom: number; padX: number } {
     const wraps = nums.querySelectorAll<HTMLElement>(".shelf-field__num-wrap");
     const first = wraps[0];
@@ -214,13 +209,11 @@ export function mountShelfTuner(
     if (id === "inner") {
       field.innerPct = clamp((x / geom.half) * 100, 0, 250);
       if (field.shoulderPct < 1) field.shoulderPct = 1;
-      // Y of inner handle = center shelf scale
       field.maxScale = clamp(s, 0.5, 1);
     } else if (id === "outer") {
       const inner = (field.innerPct / 100) * geom.half;
       const shoulderPx = Math.max(1, x - inner);
       field.shoulderPct = clamp((shoulderPx / geom.half) * 100, 1, 250);
-      // Y of outer handle = edge shelf scale (may be above center)
       field.minScale = clamp(s, 0.5, 1);
     } else if (id === "v1") {
       const t = geom.shoulder > 1e-6 ? (x - geom.inner) / geom.shoulder : 0;
@@ -281,9 +274,8 @@ export function mountShelfTuner(
   window.addEventListener("resize", onResize);
 
   document.body.appendChild(root);
-  // two frames: layout settles, then measure underlines against canvas
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => redraw());
+    requestAnimationFrame(() => redraw()); // layout → measure underlines
   });
 
   return {
@@ -366,7 +358,6 @@ function buildGeom(
   };
 }
 
-/** Snap to half-pixel for crisp 1px strokes under DPR transform. */
 function px(n: number): number {
   return Math.round(n) + 0.5;
 }
@@ -387,12 +378,10 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
   const plotB = h - padBottom;
   const overhang = 7;
 
-  // light frame
   ctx.strokeStyle = "rgb(20 22 26 / 0.16)";
   ctx.lineWidth = 1;
   ctx.strokeRect(px(plotL), px(plotT), plotR - plotL, plotB - plotT);
 
-  // grid — extends past the frame
   ctx.strokeStyle = "rgb(20 22 26 / 0.07)";
   ctx.lineWidth = 1;
   const xTicks = 8;
@@ -412,7 +401,6 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
     ctx.stroke();
   }
 
-  // emphasize center / edge / floor — also past frame
   ctx.strokeStyle = "rgb(20 22 26 / 0.18)";
   for (const s of [centerS, edgeS, yMin]) {
     const y = px(toY(s));
@@ -422,7 +410,6 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
     ctx.stroke();
   }
 
-  // viewport edge
   ctx.strokeStyle = "rgb(15 110 106 / 0.4)";
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -431,7 +418,6 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // shelf markers
   ctx.strokeStyle = "rgb(20 22 26 / 0.22)";
   ctx.beginPath();
   ctx.moveTo(px(toX(inner)), plotT - overhang);
@@ -440,7 +426,6 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
   ctx.lineTo(px(toX(outer)), plotB + overhang);
   ctx.stroke();
 
-  // main curve
   ctx.beginPath();
   for (let i = 0; i <= 160; i++) {
     const x = (i / 160) * xMax;
@@ -456,7 +441,6 @@ function drawPlot(canvas: HTMLCanvasElement, field: ShelfFieldParams, geom: Plot
   ctx.lineCap = "round";
   ctx.stroke();
 
-  // bezier stems
   ctx.strokeStyle = "rgb(180 140 50 / 0.7)";
   ctx.lineWidth = 1.25;
   ctx.beginPath();

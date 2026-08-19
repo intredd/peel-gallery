@@ -2,7 +2,7 @@ import gsap from "gsap";
 
 export type TickerFn = (time: number) => void;
 
-/** Call once per app/host setup when Lenis/ST may share the clock. */
+// Once per app — Lenis/ST may share gsap.ticker.
 export function prepareTicker(): void {
   gsap.ticker.lagSmoothing(0);
 }

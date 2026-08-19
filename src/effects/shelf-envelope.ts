@@ -1,25 +1,13 @@
-/**
- * Shelf field + gap-preserving card packing for the peel gallery.
- *
- * - Field: three shelves + Bézier shoulder → s(x)
- * - Pack: tx so visual edges keep layout gaps (edges use s at card L/R)
- * - Anchor: viewport mid — avoids jumps when nearest card flips,
- *   especially with inverted center < edge scales
- *
- * `field` is read every frame — mutate it from the tuner UI.
- */
+// Shelf field s(x), gap-preserving pack, peel text matrix. `field` is live-tuned.
 
 export type CardRect = {
-  /** Viewport-relative CSS px (0 = left of visible gallery). */
   x: number;
   y: number;
   w: number;
   h: number;
-  /** DOM node — used for click → scroll after peel packing. */
   el: HTMLElement;
 };
 
-/** Visual AABB after peel + tx (viewport CSS px). Updated each frame. */
 export type ShelfHit = {
   el: HTMLElement;
   left: number;
@@ -32,30 +20,15 @@ export type ShelfHitModel = {
   hits: ShelfHit[];
 };
 
-/**
- * Live-tunable shelf field (mutate in place).
- *
- * innerPct / shoulderPct are % of viewport half-width:
- *   100% = from center to the viewport edge
- *   >100% = past the edge (off-screen)
- *
- * Scale: center shelf uses `maxScale`, edge shelves use `minScale`
- * (both ∈ [0.5, 1], either may be larger — inverted bowl allowed).
- *
- * Ramp in unit-u: P0=(0,1) → P3=(1,0); V1 from P0, V2 from P3.
- */
+// Tuner knobs — innerPct/shoulderPct are % of half viewport width.
 export type ShelfFieldParams = {
-  /** Max shelf half-width, % of viewW/2 (100 = to screen edge). */
   innerPct: number;
-  /** Ramp length after max shelf, % of viewW/2. */
   shoulderPct: number;
   vx1: number;
   vy1: number;
   vx2: number;
   vy2: number;
-  /** Scale on the center shelf (unit field u = 1). */
   maxScale: number;
-  /** Scale on the edge shelves (unit field u = 0). */
   minScale: number;
 };
 
@@ -94,10 +67,7 @@ function smoothstep01(x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/**
- * How step-like the control polygon is (0 = gentle, 1 = near-vertical).
- * Used to adapt shelf curvature so harsh tuner graphs still peel smoothly.
- */
+// 0 = soft ramp, 1 = near-step — smooths harsh tuner curves.
 export function rampHarshness(field: ShelfFieldParams): number {
   const { p1x, p1y, p2x, p2y } = rampControls(field);
   const vert = (dy: number, dx: number) => Math.abs(dy) / Math.max(Math.abs(dx), 0.08);
@@ -105,10 +75,6 @@ export function rampHarshness(field: ShelfFieldParams): number {
   return clamp01((peak - 1.15) / 5.5);
 }
 
-/**
- * Unit ramp along the shoulder. When handles make a near-step, domain+range
- * are gently pulled toward smoothstep so the shelf keeps rounded curvature.
- */
 export function bezierRampAt(xNorm: number, field: ShelfFieldParams): number {
   const xRaw = clamp01(xNorm);
   const harsh = rampHarshness(field);
@@ -144,7 +110,6 @@ export function threeShelf(
   return bezierRampAt((ax - inner) / span, field);
 }
 
-/** Map unit shelf field u∈[0,1] → scale (u=1 center, u=0 edges). */
 export function scaleFromU(u: number, field: ShelfFieldParams): number {
   const center = Math.max(0.5, Math.min(1, field.maxScale));
   const edge = Math.max(0.5, Math.min(1, field.minScale));
@@ -173,6 +138,56 @@ export function visualRight(item: PackedCard): number {
   return item.cx + item.tx + (item.card.w / 2) * item.sR;
 }
 
+export type TextBox = {
+  left: number;
+  top: number;
+  w: number;
+  h: number;
+};
+
+export type CaptionBox = TextBox;
+
+export const PEEL_TEXT_SELECTOR = "[data-peel-text]";
+
+// DOM text box → same baseline warp as the fragment shader.
+export function peelTextBoxTransform(
+  item: PackedCard,
+  box: TextBox,
+  viewW: number,
+  field: ShelfFieldParams,
+): string {
+  if (box.w < 1 || box.h < 1) return "";
+
+  const { card, cx, cy, tx } = item;
+  const midCx = cx + tx;
+  const warp = (localX: number, localY: number) => {
+    const s = scaleAtX(card.x + localX, viewW, field);
+    return {
+      x: midCx + (localX - card.w * 0.5) * s,
+      y: cy + s * (localY - card.h * 0.5),
+    };
+  };
+
+  const x0 = box.left;
+  const x1 = box.left + box.w;
+  const y0 = box.top;
+  const y1 = box.top + box.h;
+  const tl = warp(x0, y0);
+  const bl = warp(x0, y1);
+  const br = warp(x1, y1);
+
+  const e = tl.x - (card.x + x0);
+  const f = tl.y - (card.y + y0);
+  const a = (br.x - bl.x) / box.w;
+  const b = (br.y - bl.y) / box.w;
+  const c = (bl.x - tl.x) / box.h;
+  const d = (bl.y - tl.y) / box.h;
+
+  return `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
+}
+
+export const peelCaptionTransform = peelTextBoxTransform;
+
 export function packWithConstantGaps(
   cards: CardRect[],
   mid: number,
@@ -195,8 +210,7 @@ export function packWithConstantGaps(
 
   if (items.length === 0) return items;
 
-  // Prefer a card that straddles mid: lock layout mid → visual mid (continuous
-  // as mid enters/leaves the card). Otherwise grow L/R from the mid gap.
+  // Card under viewport mid anchors the pack; else grow from the gap.
   let anchor = items.findIndex(
     (it) => it.card.x < mid && it.card.x + it.card.w > mid,
   );
