@@ -15,3 +15,16 @@ Thumbs.db
 # Extra markdown (keep root README only)
 *.md
 !README.md
+
+# Local agent brief / plans — never commit
+README_AGENT.md
+PLAN.md
+
+# Local cylinder lab — keep on disk, never commit
+src/core/mat4.ts
+src/effects/cylinder-field.ts
+src/hosts/webgl-cylinder.ts
+src/ui/cylinder-tuner.ts
+
+# Local screencast driver (?capture)
+src/demo/
