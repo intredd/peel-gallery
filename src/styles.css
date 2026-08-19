@@ -106,7 +106,7 @@ body {
   z-index: 2;
 }
 
-/* GL paints cards; transparent DOM labels for selection. */
+/* GL paints cards; transparent peel-text handles selection. */
 .gallery-shell.is-peeled [data-peel-track] .shot {
   visibility: hidden;
   pointer-events: none;
@@ -122,11 +122,6 @@ body {
   overflow: visible;
 }
 
-.gallery-shell.is-peeled [data-peel-track] .shot.is-live .shot__photo {
-  user-select: auto;
-  -webkit-user-select: auto;
-}
-
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text] {
   visibility: visible;
   pointer-events: auto;
@@ -134,13 +129,20 @@ body {
   -webkit-user-select: text;
   width: max-content;
   max-width: 100%;
-  line-height: 1;
   color: transparent;
   -webkit-text-fill-color: transparent;
   cursor: text;
   caret-color: transparent;
   -webkit-tap-highlight-color: transparent;
   will-change: transform;
+}
+
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live .shot__cap[data-peel-text] {
+  line-height: 1;
+}
+
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live .shot__index[data-peel-text] {
+  line-height: 1.2;
 }
 
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text]::selection,
@@ -510,27 +512,20 @@ html.is-stage .shelf-field {
 }
 
 html.is-stage .page {
-  display: flex;
-  flex-direction: column;
+  justify-content: center;
   gap: 0;
   padding: 0;
 }
 
 html.is-stage .gallery-shell {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
+  flex: 0 0 auto;
+  height: min(48vh, 100%);
   max-height: none;
   margin: 0;
 }
 
 html.is-stage .gallery__track {
   padding-block: 0;
-}
-
-html.is-stage .shot {
-  height: min(78vh, 100%);
-  aspect-ratio: 3 / 4;
 }
 
 @media (max-width: 720px) {
@@ -544,10 +539,6 @@ html.is-stage .shot {
   html.is-stage .gallery-shell {
     grid-row: auto;
     grid-column: auto;
-  }
-
-  html.is-stage .shot {
-    height: min(88dvh, 100%);
-    aspect-ratio: 2 / 3;
+    height: min(62dvh, 100%);
   }
 }
