@@ -2,6 +2,8 @@ import {
   buildShotTextSelection,
   paintShotTile,
   peelTextLayoutBox,
+  selectionIntersectsPeelText,
+  type PeelTextLayoutResolver,
   type PeelTextSelection,
 } from "../core/shot-paint";
 import { addTicker, prepareTicker, removeTicker } from "../core/loop";
@@ -223,7 +225,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   const textures = new Map<string, WebGLTexture>();
   const selectionTextures = new Map<string, WebGLTexture>();
   const liveCards = new Set<HTMLElement>();
-  let lastPacked: PackedCard[] = [];
   let centerEl: HTMLElement | null = null;
   let viewCssW = 1;
   let viewCssH = 1;
@@ -292,26 +293,110 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
 
   let selectedKey: string | null = null;
   let selectedParts: PeelTextSelection[] | null = null;
-  let selectionRaf = 0;
-  let selectionPersistScroll = false;
   let peelTextDown: { x: number; y: number } | null = null;
   let peelTextDownShot: HTMLElement | null = null;
+  let selectedShotEl: HTMLElement | null = null;
+  let selectionCommitLock = 0;
+  let rebakeToken = 0;
+  const frozenSelectionLayout = new Map<string, Map<HTMLElement, ReturnType<typeof peelTextLayoutBox>>>();
+
+  function shotFromSelection(sel: Selection | null): HTMLElement | null {
+    if (!sel?.anchorNode) return null;
+    const anchor = sel.anchorNode;
+    return (
+      anchor instanceof HTMLElement
+        ? anchor.closest<HTMLElement>(".shot")
+        : anchor.parentElement?.closest<HTMLElement>(".shot")
+    ) ?? null;
+  }
+
+  function setPeelTextHitExclusive(exclusive: HTMLElement | null) {
+    for (const el of liveCards) {
+      for (const node of el.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR)) {
+        node.style.pointerEvents = exclusive && el !== exclusive ? "none" : "";
+      }
+    }
+  }
+
+  function updatePeelTextHitExclusive() {
+    const exclusive =
+      peelTextDownShot ??
+      selectedShotEl ??
+      (selectedKey ? bakeSourceForKey(selectedKey) : null);
+    setPeelTextHitExclusive(exclusive);
+  }
+
+  function captureSelectionLayout(shot: HTMLElement, key: string) {
+    const map = new Map<HTMLElement, ReturnType<typeof peelTextLayoutBox>>();
+    for (const node of shot.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR)) {
+      map.set(node, peelTextLayoutBox(node, shot));
+    }
+    frozenSelectionLayout.set(key, map);
+  }
+
+  function layoutResolverForKey(key: string): PeelTextLayoutResolver | undefined {
+    const map = frozenSelectionLayout.get(key);
+    if (!map) return undefined;
+    return (node, shot) => map.get(node) ?? peelTextLayoutBox(node, shot);
+  }
+
+  function clearFrozenSelectionLayout(key?: string) {
+    if (key) frozenSelectionLayout.delete(key);
+    else frozenSelectionLayout.clear();
+  }
 
   function isPeelTextSelection(sel: Selection | null): boolean {
-    if (!sel?.anchorNode) return false;
-    const el =
-      sel.anchorNode instanceof HTMLElement ? sel.anchorNode : sel.anchorNode.parentElement;
-    return !!el?.closest("[data-peel-track] [data-peel-text]");
+    if (!sel?.rangeCount) return false;
+    if (!sel.isCollapsed) {
+      return selectionIntersectsPeelText(sel.getRangeAt(0), track);
+    }
+    const anchor =
+      sel.anchorNode instanceof HTMLElement ? sel.anchorNode : sel.anchorNode?.parentElement;
+    return !!anchor?.closest("[data-peel-track] .shot.is-live [data-peel-text]");
+  }
+
+  function shotFromRange(range: Range): HTMLElement | null {
+    const start =
+      range.startContainer instanceof HTMLElement
+        ? range.startContainer
+        : range.startContainer.parentElement;
+    return start?.closest<HTMLElement>("[data-peel-track] .shot") ?? null;
+  }
+
+  function commitSelectionOnShot(shot: HTMLElement, range: Range): boolean {
+    if (!shot.classList.contains("is-live")) return false;
+    if (peelTextDown !== null && peelTextDownShot && shot !== peelTextDownShot) return false;
+    const key = shotKey(shot);
+    if (key !== selectedKey) captureSelectionLayout(shot, key);
+    const layout = layoutResolverForKey(key);
+    const parts = buildShotTextSelection(shot, range, layout);
+    if (!parts.length) return false;
+    selectedKey = key;
+    selectedParts = parts;
+    selectedShotEl = shot;
+    return true;
+  }
+
+  function restoreDomSelection(range: Range) {
+    const sel = document.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   function clearPeelSelection() {
-    selectionPersistScroll = false;
     peelTextDownShot = null;
+    selectedShotEl = null;
     document.getSelection()?.removeAllRanges();
-    if (!selectedKey) return;
+    if (!selectedKey) {
+      updatePeelTextHitExclusive();
+      return;
+    }
+    clearFrozenSelectionLayout(selectedKey);
     selectedKey = null;
     selectedParts = null;
     clearSelectionTextures();
+    updatePeelTextHitExclusive();
     markDirty();
   }
 
@@ -319,35 +404,44 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     if (!selectedKey || !selectedParts?.length) return;
     const source = bakeSourceForKey(selectedKey);
     if (!source) return;
+    const key = selectedKey;
+    const layout = layoutResolverForKey(key);
+    const token = ++rebakeToken;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    void paintShotTile(source, dpr, selectedParts).then((canvas) => {
-      uploadSelectionTexture(selectedKey!, canvas);
+    void paintShotTile(source, dpr, selectedParts, layout).then((canvas) => {
+      if (token !== rebakeToken || selectedKey !== key) return;
+      uploadSelectionTexture(key, canvas);
       markDirty();
     });
   }
 
-  function syncSelectionTextures() {
+  function syncSelectionState() {
     const prevKey = selectedKey;
     const sel = document.getSelection();
+    const activeRange =
+      sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 
-    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
-      selectionPersistScroll = false;
-      const anchor = sel.anchorNode;
-      const shot =
-        anchor instanceof HTMLElement
-          ? anchor.closest<HTMLElement>(".shot")
-          : (anchor?.parentElement?.closest<HTMLElement>(".shot") ?? null);
+    const locked = performance.now() < selectionCommitLock;
 
+    if (!locked && activeRange && selectionIntersectsPeelText(activeRange, track)) {
+      const shot = shotFromRange(activeRange);
       if (shot?.classList.contains("is-live")) {
-        const parts = buildShotTextSelection(shot);
-        if (parts.length) {
-          selectedKey = shotKey(shot);
-          selectedParts = parts;
+        const key = shotKey(shot);
+        const sameCard = !selectedKey || key === selectedKey;
+        const gesturing = peelTextDown !== null || peelTextDownShot !== null;
+        if (sameCard || gesturing) {
+          commitSelectionOnShot(shot, activeRange);
         }
       }
-    } else if (!isPeelTextSelection(sel)) {
-      selectedKey = null;
-      selectedParts = null;
+    } else if (!locked && !isPeelTextSelection(sel)) {
+      if (peelTextDown !== null || peelTextDownShot) {
+        /* mid-gesture — keep DOM + canvas selection */
+      } else if (!(selectedKey && selectedParts?.length)) {
+        if (selectedKey) clearFrozenSelectionLayout(selectedKey);
+        selectedKey = null;
+        selectedParts = null;
+        selectedShotEl = null;
+      }
     }
 
     const keep = selectedKey ? new Set([selectedKey]) : new Set<string>();
@@ -361,11 +455,25 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function onSelectionChange() {
-    if (selectionRaf) return;
-    selectionRaf = requestAnimationFrame(() => {
-      selectionRaf = 0;
-      syncSelectionTextures();
-    });
+    if (peelTextDown !== null || peelTextDownShot) {
+      if (peelTextDown !== null) {
+        const sel = document.getSelection();
+        if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const allowed = peelTextDownShot;
+          if (!allowed || !selectionIntersectsPeelText(range, allowed)) return;
+          if (commitSelectionOnShot(allowed, range)) {
+            const keep = selectedKey ? new Set([selectedKey]) : new Set<string>();
+            clearSelectionTextures(keep);
+            rebakeSelectedKey();
+          }
+        }
+        markDirty();
+      }
+      return;
+    }
+    syncSelectionState();
+    markDirty();
   }
 
   function bakeTextures() {
@@ -423,7 +531,37 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       clearPeelText(el);
       if (el.tabIndex === 0) el.removeAttribute("tabindex");
     }
+    setPeelTextHitExclusive(null);
     liveCards.clear();
+  }
+
+  /** One peel-text host per shot key — loop clones overlap and steal selection. */
+  function pickLivePacked(packed: PackedCard[], mid: number): PackedCard[] {
+    const byKey = new Map<string, PackedCard[]>();
+    for (const item of packed) {
+      const key = shotKey(item.card.el);
+      const list = byKey.get(key) ?? [];
+      list.push(item);
+      byKey.set(key, list);
+    }
+
+    const out: PackedCard[] = [];
+    for (const items of byKey.values()) {
+      const nonClones = items.filter((i) => !i.card.el.hasAttribute("data-loop-clone"));
+      const pool = nonClones.length ? nonClones : items;
+      let best = pool[0]!;
+      let bestDist = Infinity;
+      for (const item of pool) {
+        const cx = (visualLeft(item) + visualRight(item)) / 2;
+        const d = Math.abs(cx - mid);
+        if (d < bestDist) {
+          bestDist = d;
+          best = item;
+        }
+      }
+      out.push(best);
+    }
+    return out;
   }
 
   function clearCenterMark() {
@@ -450,16 +588,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     centerEl.classList.add("is-center");
   }
 
-  function shotFromSelection(sel: Selection | null): HTMLElement | null {
-    if (!sel?.anchorNode) return null;
-    const anchor = sel.anchorNode;
-    return (
-      anchor instanceof HTMLElement
-        ? anchor.closest<HTMLElement>(".shot")
-        : anchor.parentElement?.closest<HTMLElement>(".shot")
-    ) ?? null;
-  }
-
   function shouldFreezePeelDom(el: HTMLElement): boolean {
     if (peelTextDownShot === el) return true;
     if (selectedKey !== null && shotKey(el) === selectedKey) return true;
@@ -472,9 +600,22 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function syncLiveCards(packed: PackedCard[]) {
-    const nextLive = new Set<HTMLElement>();
+    const mid = viewCssW / 2;
+    const liveItems = pickLivePacked(packed, mid);
+    const liveItemEls = new Set(liveItems.map((item) => item.card.el));
 
     for (const item of packed) {
+      const el = item.card.el;
+      if (liveItemEls.has(el)) continue;
+      if (shouldFreezePeelDom(el)) {
+        liveItems.push(item);
+        liveItemEls.add(el);
+      }
+    }
+
+    const nextLive = new Set<HTMLElement>();
+
+    for (const item of liveItems) {
       const el = item.card.el;
       const textNodes = el.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR);
       if (!textNodes.length) continue;
@@ -489,14 +630,11 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       for (const node of textNodes) {
         const box = peelTextLayoutBox(node, el);
         if (box.w < 2 && box.h < 2) continue;
-        node.style.width = `${box.w}px`;
+        if (!node.classList.contains("shot__index")) {
+          node.style.width = `${box.w}px`;
+        }
         node.style.transformOrigin = "0 0";
-        node.style.transform = peelTextBoxTransform(
-          item,
-          box,
-          viewCssW,
-          field,
-        );
+        node.style.transform = peelTextBoxTransform(item, box, viewCssW, field);
         synced = true;
       }
       if (!synced) continue;
@@ -512,10 +650,19 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       if (el.tabIndex === 0) el.removeAttribute("tabindex");
     }
 
+    for (const node of track.children) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (nextLive.has(node)) continue;
+      if (!node.classList.contains("is-live")) continue;
+      node.classList.remove("is-live");
+      clearPeelText(node);
+    }
+
     liveCards.clear();
     for (const el of nextLive) liveCards.add(el);
 
     if (centerEl && liveCards.has(centerEl)) centerEl.tabIndex = 0;
+    updatePeelTextHitExclusive();
   }
 
   function setFieldUniforms(viewW: number) {
@@ -617,7 +764,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
 
     syncCenterCard(packed, mid);
     syncLiveCards(packed);
-    lastPacked = packed;
 
     packed.sort((a, b) => {
       const ca = Math.abs(a.cx + a.tx - mid);
@@ -646,7 +792,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function onScroll() {
-    selectionPersistScroll = true;
     markDirty();
   }
 
@@ -659,23 +804,49 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   function onTrackPointerDown(e: PointerEvent) {
     if (!(e.target instanceof Element)) return;
     if (!e.target.closest("[data-peel-track] [data-peel-text]")) return;
-    selectionPersistScroll = false;
     peelTextDown = { x: e.clientX, y: e.clientY };
     peelTextDownShot = e.target.closest<HTMLElement>(".shot");
+    if (peelTextDownShot) {
+      captureSelectionLayout(peelTextDownShot, shotKey(peelTextDownShot));
+      setPeelTextHitExclusive(peelTextDownShot);
+    }
   }
 
   function onTrackPointerUp(e: PointerEvent) {
-    peelTextDownShot = null;
-    if (!peelTextDown) return;
-    const dx = e.clientX - peelTextDown.x;
-    const dy = e.clientY - peelTextDown.y;
-    peelTextDown = null;
-    if (dx * dx + dy * dy > 16) return;
-    if (!(e.target instanceof Element)) return;
-    if (!e.target.closest("[data-peel-track] [data-peel-text]")) return;
+    const down = peelTextDown;
+    const downShot = peelTextDownShot;
+    const tap = down
+      ? (e.clientX - down.x) ** 2 + (e.clientY - down.y) ** 2 <= 16
+      : false;
+    const sel = document.getSelection();
+    const rangeSnapshot =
+      !tap && sel && !sel.isCollapsed && sel.rangeCount > 0
+        ? sel.getRangeAt(0).cloneRange()
+        : null;
+
     requestAnimationFrame(() => {
-      const sel = document.getSelection();
-      if (sel?.isCollapsed) clearPeelSelection();
+      if (rangeSnapshot && downShot?.classList.contains("is-live")) {
+        if (commitSelectionOnShot(downShot, rangeSnapshot)) {
+          const keep = selectedKey ? new Set([selectedKey]) : new Set<string>();
+          clearSelectionTextures(keep);
+          rebakeSelectedKey();
+        }
+        restoreDomSelection(rangeSnapshot);
+        selectionCommitLock = performance.now() + 120;
+      } else {
+        syncSelectionState();
+      }
+
+      peelTextDown = null;
+      peelTextDownShot = null;
+      updatePeelTextHitExclusive();
+      markDirty();
+
+      if (!tap) return;
+      if (!(e.target instanceof Element)) return;
+      if (!e.target.closest("[data-peel-track] [data-peel-text]")) return;
+      const endSel = document.getSelection();
+      if (endSel?.isCollapsed) clearPeelSelection();
     });
   }
 
@@ -720,9 +891,10 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       track.removeEventListener("pointerup", onTrackPointerUp, true);
       track.removeEventListener("pointercancel", onTrackPointerUp, true);
       document.removeEventListener("selectionchange", onSelectionChange);
-      if (selectionRaf) cancelAnimationFrame(selectionRaf);
       selectedKey = null;
       selectedParts = null;
+      selectedShotEl = null;
+      clearFrozenSelectionLayout();
       clearSelectionTextures();
       scroller.style.cursor = "";
       mount.classList.remove("is-peeled");

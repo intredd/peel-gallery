@@ -186,8 +186,6 @@ export function peelTextBoxTransform(
   return `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
 }
 
-export const peelCaptionTransform = peelTextBoxTransform;
-
 export function packWithConstantGaps(
   cards: CardRect[],
   mid: number,
