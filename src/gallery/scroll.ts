@@ -2,23 +2,15 @@ import gsap from "gsap";
 
 export type GalleryScroll = {
   destroy: () => void;
-  /** Width of one logical slide set (loop normalize / progress). */
   getSetWidth: () => number;
 };
 
 export type GalleryScrollOptions = {
-  /**
-   * Hit-test in viewport space (0 = left of scroller).
-   * Return the slide under the peel-warped card, or null to fall back to layout.
-   */
+  // Viewport X → warped slide, or null for flat layout fallback.
   resolveSlideAt?: (viewX: number) => { el: HTMLElement; cx: number } | null;
 };
 
-/**
- * Infinite horizontal strip:
- * 3 copies of slides → stay in the middle copy via ±setWidth jumps on scrollLeft.
- * Peel host reads the same scrollLeft for layout.
- */
+// 3× strip loop; peel host reads the same scrollLeft.
 export function bindGalleryScroll(
   scroller: HTMLElement,
   track: HTMLElement,
@@ -49,7 +41,7 @@ export function bindGalleryScroll(
     setCount = originals.length;
     if (setCount === 0) return;
 
-    // two extra copies → 3 sets total
+    // clone twice → 3 sets
     for (let c = 0; c < 2; c++) {
       for (const slide of originals) {
         const clone = slide.cloneNode(true) as HTMLElement;
@@ -61,7 +53,7 @@ export function bindGalleryScroll(
     setWidth = measureSetWidth();
   }
 
-  /** Keep scrollLeft inside the middle set [setWidth, 2*setWidth). */
+  // Stay in middle copy [setWidth, 2×setWidth).
   function normalizeLoop(): number {
     if (setWidth <= 0) return 0;
     let delta = 0;
@@ -91,10 +83,7 @@ export function bindGalleryScroll(
     return wrapIntoMiddle(rawScrollLeftForSlide(slide));
   }
 
-  /**
-   * Pick scroll target for a slide in a given direction so we never ease backward
-   * when the user asked for next (loop clones + wrapIntoMiddle caused that).
-   */
+  // Next/prev: never ease backward across loop clones.
   function scrollLeftInDirection(slide: HTMLElement, direction: 1 | -1): number {
     let target = rawScrollLeftForSlide(slide);
     if (setWidth <= 0) return target;
@@ -131,7 +120,7 @@ export function bindGalleryScroll(
     const warped = options.resolveSlideAt?.(viewX);
     if (warped) return warped;
 
-    // Fallback: layout space (empty hit model)
+    // flat layout fallback
     const x = scroller.scrollLeft + viewX;
     let best: HTMLElement | null = null;
     let bestCx = 0;
@@ -154,8 +143,7 @@ export function bindGalleryScroll(
   function goToSlide(slide: HTMLElement, duration = 0.55, direction?: 1 | -1) {
     gsap.killTweensOf(scroller);
     snapDelay?.kill();
-    // Interrupted tweens can sit past the middle set; re-enter before planning.
-    normalizeLoop();
+    normalizeLoop(); // tween may have left us outside the middle set
 
     const cur = scroller.scrollLeft;
     let target =
@@ -164,12 +152,11 @@ export function bindGalleryScroll(
         : scrollLeftInDirection(slide, direction);
 
     if (setWidth > 0) {
-      // Prefer a target within ±1 set of current (short hop on the 3× strip).
+      // short hop: target within ±1 set of current
       while (target - cur > setWidth * 1.5) target -= setWidth;
       while (cur - target > setWidth * 1.5) target += setWidth;
 
-      // Keep the whole tween on-strip: identical clone jump, then ease inside.
-      // (Do not normalizeLoop here — that would undo the jump.)
+      // jump clones first, then ease — don't normalizeLoop mid-plan
       while (target >= setWidth * 2) {
         scroller.scrollLeft -= setWidth;
         target -= setWidth;
@@ -202,8 +189,7 @@ export function bindGalleryScroll(
 
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
-    // Let flat live cards handle text select / focus without starting a drag.
-    if (e.target instanceof Element && e.target.closest(".shot.is-live")) return;
+    if (e.target instanceof Element && e.target.closest(".shot.is-live [data-peel-text]")) return;
     gsap.killTweensOf(scroller);
     snapDelay?.kill();
     normalizeLoop();
@@ -223,7 +209,7 @@ export function bindGalleryScroll(
     const frameDx = e.clientX - lastX;
     if (Math.abs(e.clientX - startX) > 3) moved = true;
 
-    // Relative drag — survives infinite-loop wraps without startScroll desync
+    // relative drag — survives loop wraps
     scroller.scrollLeft -= frameDx;
     normalizeLoop();
 
@@ -240,10 +226,10 @@ export function bindGalleryScroll(
     try {
       scroller.releasePointerCapture(e.pointerId);
     } catch {
-      // already released
+      /* released */
     }
 
-    // click → center the pressed (visually warped) card
+    // tap → center warped card
     if (!moved) {
       const hit = slideFromClientX(e.clientX);
       if (hit) {

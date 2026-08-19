@@ -1,177 +1,120 @@
-/**
- * Bake gallery `.shot` tiles to canvas for WebGL textures.
- * Gradients mirror styles.css — soft multi-stop radials (no hard blob edges).
- */
+// Bake `.shot` tiles → canvas textures (photo cover + peel text).
 
-type ShotPaint = {
-  linear: { angle: number; stops: [number, string][] };
-  radial: {
-    cx: number;
-    cy: number;
-    rx: number;
-    ry: number;
-    stops: [number, string][];
-  };
-};
+let captionMeasureCtx: CanvasRenderingContext2D | null = null;
 
-const SHOT_PAINT: Record<string, ShotPaint> = {
-  "shot--1": {
-    linear: {
-      angle: 160,
-      stops: [
-        [0, "#3d4a52"],
-        [0.48, "#8fa0a8"],
-        [1, "#d5dde0"],
-      ],
-    },
-    radial: {
-      cx: 0.22,
-      cy: 0.18,
-      rx: 0.95,
-      ry: 0.75,
-      stops: [
-        [0, "rgba(200, 213, 220, 0.42)"],
-        [0.4, "rgba(200, 213, 220, 0.16)"],
-        [0.78, "rgba(200, 213, 220, 0)"],
-        [1, "rgba(200, 213, 220, 0)"],
-      ],
-    },
-  },
-  "shot--2": {
-    linear: {
-      angle: 200,
-      stops: [
-        [0, "#2a3338"],
-        [0.42, "#6b787f"],
-        [1, "#b9c4c8"],
-      ],
-    },
-    radial: {
-      cx: 0.82,
-      cy: 0.22,
-      rx: 0.9,
-      ry: 0.7,
-      stops: [
-        [0, "rgba(232, 220, 200, 0.4)"],
-        [0.38, "rgba(232, 220, 200, 0.15)"],
-        [0.76, "rgba(232, 220, 200, 0)"],
-        [1, "rgba(232, 220, 200, 0)"],
-      ],
-    },
-  },
-  "shot--3": {
-    linear: {
-      angle: 145,
-      stops: [
-        [0, "#4a3f38"],
-        [0.5, "#9a8570"],
-        [1, "#e2d6c4"],
-      ],
-    },
-    radial: {
-      cx: 0.32,
-      cy: 0.78,
-      rx: 0.85,
-      ry: 0.65,
-      stops: [
-        [0, "rgba(212, 196, 176, 0.4)"],
-        [0.4, "rgba(212, 196, 176, 0.14)"],
-        [0.78, "rgba(212, 196, 176, 0)"],
-        [1, "rgba(212, 196, 176, 0)"],
-      ],
-    },
-  },
-  "shot--4": {
-    linear: {
-      angle: 180,
-      stops: [
-        [0, "#1c2228"],
-        [0.45, "#4e5d68"],
-        [1, "#9aabb4"],
-      ],
-    },
-    radial: {
-      cx: 0.68,
-      cy: 0.32,
-      rx: 0.8,
-      ry: 0.62,
-      stops: [
-        [0, "rgba(168, 184, 196, 0.38)"],
-        [0.36, "rgba(168, 184, 196, 0.14)"],
-        [0.74, "rgba(168, 184, 196, 0)"],
-        [1, "rgba(168, 184, 196, 0)"],
-      ],
-    },
-  },
-  "shot--5": {
-    linear: {
-      angle: 210,
-      stops: [
-        [0, "#3a4540"],
-        [0.48, "#7d8f82"],
-        [1, "#c5d0c4"],
-      ],
-    },
-    radial: {
-      cx: 0.18,
-      cy: 0.42,
-      rx: 0.92,
-      ry: 0.72,
-      stops: [
-        [0, "rgba(220, 230, 216, 0.4)"],
-        [0.4, "rgba(220, 230, 216, 0.15)"],
-        [0.78, "rgba(220, 230, 216, 0)"],
-        [1, "rgba(220, 230, 216, 0)"],
-      ],
-    },
-  },
-  "shot--6": {
-    linear: {
-      angle: 155,
-      stops: [
-        [0, "#252830"],
-        [0.46, "#5a5f70"],
-        [1, "#b0b4c0"],
-      ],
-    },
-    radial: {
-      cx: 0.58,
-      cy: 0.14,
-      rx: 0.88,
-      ry: 0.68,
-      stops: [
-        [0, "rgba(196, 192, 208, 0.38)"],
-        [0.38, "rgba(196, 192, 208, 0.14)"],
-        [0.76, "rgba(196, 192, 208, 0)"],
-        [1, "rgba(196, 192, 208, 0)"],
-      ],
-    },
-  },
-};
-
-function linearGradient(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  angleDeg: number,
-  stops: [number, string][],
-): CanvasGradient {
-  const rad = ((angleDeg - 90) * Math.PI) / 180;
-  const cx = w / 2;
-  const cy = h / 2;
-  const len = Math.hypot(w, h) / 2;
-  const g = ctx.createLinearGradient(
-    cx - Math.cos(rad) * len,
-    cy - Math.sin(rad) * len,
-    cx + Math.cos(rad) * len,
-    cy + Math.sin(rad) * len,
-  );
-  for (const [t, c] of stops) g.addColorStop(t, c);
-  return g;
+function captionMeasureContext(): CanvasRenderingContext2D {
+  if (!captionMeasureCtx) {
+    const c = document.createElement("canvas");
+    captionMeasureCtx = c.getContext("2d");
+    if (!captionMeasureCtx) throw new Error("captionMeasure: 2d unavailable");
+  }
+  return captionMeasureCtx;
 }
 
-/** Paint one shot; `dpr` bakes sharper textures for Retina (UV still 0…1). */
-export function paintShotTile(el: HTMLElement, dpr = 1): HTMLCanvasElement {
+// Match GL font metrics for a peel-text node.
+export function applyPaintFont(ctx: CanvasRenderingContext2D, node: HTMLElement) {
+  const cs = getComputedStyle(node);
+  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  ctx.letterSpacing =
+    cs.letterSpacing && cs.letterSpacing !== "normal" ? cs.letterSpacing : "0px";
+  ctx.fillStyle = cs.color;
+}
+
+export function measurePaintTextWidth(node: HTMLElement): number {
+  const ctx = captionMeasureContext();
+  applyPaintFont(ctx, node);
+  return ctx.measureText(node.textContent?.trim() ?? "").width;
+}
+
+// Peel-text box in shot-local px.
+export function peelTextLayoutBox(node: HTMLElement, shot: HTMLElement) {
+  let left = 0;
+  let top = 0;
+  let cur: HTMLElement | null = node;
+  while (cur && cur !== shot) {
+    left += cur.offsetLeft;
+    top += cur.offsetTop;
+    cur = cur.offsetParent instanceof HTMLElement ? cur.offsetParent : null;
+  }
+  const w = Math.max(measurePaintTextWidth(node), 1);
+  return { left, top, w, h: Math.max(node.offsetHeight, 1) };
+}
+
+function paintPeelTextLayer(ctx: CanvasRenderingContext2D, el: HTMLElement) {
+  for (const node of el.querySelectorAll<HTMLElement>("[data-peel-text]")) {
+    const text = node.textContent?.trim() ?? "";
+    if (!text) continue;
+    const box = peelTextLayoutBox(node, el);
+    applyPaintFont(ctx, node);
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(text, box.left, box.top + box.h);
+  }
+}
+
+function parseObjectPosition(
+  raw: string,
+  boxW: number,
+  boxH: number,
+  drawW: number,
+  drawH: number,
+): { x: number; y: number } {
+  const parts = raw.trim().split(/\s+/);
+  const mapAxis = (token: string | undefined, box: number, draw: number, fallback: number) => {
+    if (!token || token === "center") return (box - draw) * 0.5;
+    if (token === "left" || token === "top") return 0;
+    if (token === "right" || token === "bottom") return box - draw;
+    if (token.endsWith("%")) return (box - draw) * (parseFloat(token) / 100);
+    const px = parseFloat(token);
+    return Number.isFinite(px) ? px : (box - draw) * fallback;
+  };
+  return {
+    x: mapAxis(parts[0], boxW, drawW, 0.5),
+    y: mapAxis(parts[1] ?? parts[0], boxH, drawH, 0.5),
+  };
+}
+
+function paintPhotoCover(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  w: number,
+  h: number,
+): boolean {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (iw < 1 || ih < 1) return false;
+
+  const cs = getComputedStyle(img);
+  const fit = cs.objectFit || "cover";
+  const scale =
+    fit === "contain" ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const { x, y } = parseObjectPosition(cs.objectPosition || "50% 50%", w, h, dw, dh);
+
+  if (fit === "contain") {
+    ctx.fillStyle = getComputedStyle(img.parentElement ?? img).backgroundColor || "#2a3038";
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  ctx.drawImage(img, x, y, dw, dh);
+  return true;
+}
+
+function paintTextScrim(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const g = ctx.createLinearGradient(0, h * 0.55, 0, h);
+  g.addColorStop(0, "rgba(0, 0, 0, 0)");
+  g.addColorStop(1, "rgba(0, 0, 0, 0.28)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+async function readyPhoto(img: HTMLImageElement) {
+  if (img.complete && img.naturalWidth > 0) return;
+  await img.decode();
+}
+
+export async function paintShotTile(el: HTMLElement, dpr = 1): Promise<HTMLCanvasElement> {
   const cssW = Math.max(1, Math.ceil(el.offsetWidth));
   const cssH = Math.max(1, Math.ceil(el.offsetHeight));
   const scale = Math.max(1, Math.min(dpr, 2));
@@ -182,47 +125,28 @@ export function paintShotTile(el: HTMLElement, dpr = 1): HTMLCanvasElement {
   if (!ctx) throw new Error("paintShotTile: 2d unavailable");
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
-  let paint: ShotPaint | null = null;
-  for (const cls of el.classList) {
-    if (SHOT_PAINT[cls]) {
-      paint = SHOT_PAINT[cls]!;
-      break;
-    }
-  }
-  if (!paint) paint = SHOT_PAINT["shot--1"]!;
-
   const w = cssW;
   const h = cssH;
+  const photo = el.querySelector<HTMLImageElement>(".shot__photo");
+  let painted = false;
 
-  ctx.fillStyle = linearGradient(ctx, w, h, paint.linear.angle, paint.linear.stops);
-  ctx.fillRect(0, 0, w, h);
+  if (photo) {
+    try {
+      await readyPhoto(photo);
+      painted = paintPhotoCover(ctx, photo, w, h);
+    } catch {
+      painted = false;
+    }
+  }
 
-  const { cx, cy, rx, ry, stops } = paint.radial;
-  const ex = cx * w;
-  const ey = cy * h;
-  const rMax = Math.max(rx * w, ry * h) * 0.5;
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(ex, ey, rx * w * 0.5, ry * h * 0.5, 0, 0, Math.PI * 2);
-  ctx.clip();
-  const rg = ctx.createRadialGradient(ex, ey, 0, ex, ey, rMax);
-  for (const [t, c] of stops) rg.addColorStop(t, c);
-  ctx.fillStyle = rg;
-  ctx.fillRect(0, 0, w, h);
-  ctx.restore();
+  if (!painted) {
+    ctx.fillStyle = "#3d454c";
+    ctx.fillRect(0, 0, w, h);
+  } else {
+    paintTextScrim(ctx, w, h);
+  }
 
-  const pad = Math.round(Math.min(22, Math.max(14, h * 0.04)));
-  const index = el.querySelector(".shot__index")?.textContent?.trim() ?? "";
-  const cap = el.querySelector(".shot__cap")?.textContent?.trim() ?? "";
-
-  ctx.fillStyle = "rgba(244,245,247,0.75)";
-  ctx.font = "11px Fragment Mono, ui-monospace, monospace";
-  if (index) ctx.fillText(index, pad, pad + 11);
-
-  ctx.fillStyle = "#f4f5f7";
-  const capSize = Math.round(Math.min(26, Math.max(16, h * 0.055)));
-  ctx.font = `700 ${capSize}px Syne, system-ui, sans-serif`;
-  if (cap) ctx.fillText(cap, pad, h - pad);
+  paintPeelTextLayer(ctx, el);
 
   return canvas;
 }

@@ -1,8 +1,10 @@
-import { paintShotTile } from "../core/shot-paint";
+import { paintShotTile, peelTextLayoutBox } from "../core/shot-paint";
 import { addTicker, prepareTicker, removeTicker } from "../core/loop";
 import type { PeelHost } from "../core/types";
 import {
   packWithConstantGaps,
+  PEEL_TEXT_SELECTOR,
+  peelTextBoxTransform,
   rampControls,
   rampHarshness,
   scaleAtX,
@@ -24,10 +26,7 @@ export type WebGLShelfOptions = {
   hitModel?: ShelfHitModel;
 };
 
-/**
- * Vertex: viewport CSS px → clip.
- * Fragment: inverse peel mapX(local) via bisection → sample texture (pixel-accurate curve).
- */
+// Fragment inverts mapX (bisection) so the warp matches the field.
 const VS = `
 attribute vec2 a_pos;
 uniform vec2 u_view;
@@ -175,10 +174,7 @@ function loc(gl: WebGLRenderingContext, prog: WebGLProgram, name: string) {
   return gl.getUniformLocation(prog, name);
 }
 
-/**
- * WebGL peel host — AABB quad + fragment inverse warp (same field + packing).
- * Ticker sleeps while idle.
- */
+// AABB quad + fragment warp; ticker sleeps when idle.
 export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   const { mount, scroller, track, field, getCards, hitModel } = options;
 
@@ -221,8 +217,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
 
   const textures = new Map<string, WebGLTexture>();
   const liveCards = new Set<HTMLElement>();
-  /** Max |sL−sR| to treat a card as flat enough for live DOM. */
-  const FLAT_EPS = 0.028;
   let lastPacked: PackedCard[] = [];
   let centerEl: HTMLElement | null = null;
   let viewCssW = 1;
@@ -262,15 +256,30 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   function bakeTextures() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const seen = new Set<string>();
+    const jobs: Promise<void>[] = [];
+
     for (const node of track.children) {
       if (!(node instanceof HTMLElement)) continue;
       if (node.hasAttribute("data-loop-clone")) continue;
       const key = shotKey(node);
       if (seen.has(key)) continue;
       seen.add(key);
-      uploadTexture(key, paintShotTile(node, dpr));
+      jobs.push(
+        paintShotTile(node, dpr).then((source) => {
+          uploadTexture(key, source);
+        }),
+      );
     }
-    markDirty();
+
+    void Promise.all(jobs).then(() => markDirty());
+  }
+
+  function bindPhotoRebake() {
+    for (const img of track.querySelectorAll<HTMLImageElement>(".shot__photo")) {
+      if (img.dataset.peelBound === "1") continue;
+      img.dataset.peelBound = "1";
+      img.addEventListener("load", () => bakeTextures(), { once: false });
+    }
   }
 
   function resize() {
@@ -285,11 +294,18 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     bakeTextures();
   }
 
+  function clearPeelText(el: HTMLElement) {
+    for (const node of el.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR)) {
+      node.style.transform = "";
+      node.style.transformOrigin = "";
+      node.style.width = "";
+    }
+  }
+
   function clearLiveCards() {
     for (const el of liveCards) {
       el.classList.remove("is-live");
-      el.style.transform = "";
-      el.style.transformOrigin = "";
+      clearPeelText(el);
       if (el.tabIndex === 0) el.removeAttribute("tabindex");
     }
     liveCards.clear();
@@ -319,64 +335,45 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     centerEl.classList.add("is-center");
   }
 
-  function syncLiveCards(packed: PackedCard[], mid: number) {
-    clearLiveCards();
-    // Only the centered card when it's flat — other live nodes steal pointer / break drag.
-    let best: PackedCard | null = null;
-    let bestDist = Infinity;
+  function syncLiveCards(packed: PackedCard[]) {
+    const nextLive = new Set<HTMLElement>();
+
     for (const item of packed) {
-      const cx = (visualLeft(item) + visualRight(item)) / 2;
-      const d = Math.abs(cx - mid);
-      if (d < bestDist) {
-        bestDist = d;
-        best = item;
+      const el = item.card.el;
+      const textNodes = el.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR);
+      if (!textNodes.length) continue;
+
+      let synced = false;
+      for (const node of textNodes) {
+        const box = peelTextLayoutBox(node, el);
+        if (box.w < 2 && box.h < 2) continue;
+        node.style.width = `${box.w}px`;
+        node.style.transformOrigin = "0 0";
+        node.style.transform = peelTextBoxTransform(
+          item,
+          box,
+          viewCssW,
+          field,
+        );
+        synced = true;
       }
-    }
-    if (!best || Math.abs(best.sL - best.sR) > FLAT_EPS) return;
-    const el = best.card.el;
-    const s = (best.sL + best.sR) * 0.5;
-    el.classList.add("is-live");
-    el.style.transformOrigin = "center center";
-    el.style.transform = `translate3d(${best.tx}px, 0, 0) scale(${s})`;
-    el.tabIndex = 0;
-    liveCards.add(el);
-  }
+      if (!synced) continue;
 
-  function cardContains(item: PackedCard, x: number, y: number): boolean {
-    const left = visualLeft(item);
-    const right = visualRight(item);
-    const s = Math.max(item.sL, item.sR);
-    const halfH = item.card.h * s * 0.5;
-    const y0 = item.cy - halfH;
-    const y1 = item.cy + halfH;
-    return x >= left && x <= right && y >= y0 && y <= y1;
-  }
-
-  function onCursorMove(e: PointerEvent) {
-    if (scroller.classList.contains("is-dragging")) return;
-
-    const rect = mount.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    let hit: PackedCard | null = null;
-    let hitDist = Infinity;
-    const mid = viewCssW / 2;
-    for (const item of lastPacked) {
-      if (!cardContains(item, x, y)) continue;
-      const cx = (visualLeft(item) + visualRight(item)) / 2;
-      const d = Math.abs(cx - mid);
-      if (d < hitDist) {
-        hitDist = d;
-        hit = item;
-      }
+      el.classList.add("is-live");
+      nextLive.add(el);
     }
 
-    if (hit && hit.card.el === centerEl) {
-      scroller.style.cursor = "default";
-    } else {
-      scroller.style.cursor = "grab";
+    for (const el of liveCards) {
+      if (nextLive.has(el)) continue;
+      el.classList.remove("is-live");
+      clearPeelText(el);
+      if (el.tabIndex === 0) el.removeAttribute("tabindex");
     }
+
+    liveCards.clear();
+    for (const el of nextLive) liveCards.add(el);
+
+    if (centerEl && liveCards.has(centerEl)) centerEl.tabIndex = 0;
   }
 
   function setFieldUniforms(viewW: number) {
@@ -397,7 +394,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function drawCard(item: PackedCard) {
-    if (liveCards.has(item.card.el)) return;
     const tex = textures.get(shotKey(item.card.el));
     if (!tex) return;
 
@@ -475,8 +471,8 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
         });
     }
 
-    syncLiveCards(packed, mid);
     syncCenterCard(packed, mid);
+    syncLiveCards(packed);
     lastPacked = packed;
 
     packed.sort((a, b) => {
@@ -515,6 +511,7 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
 
   prepareTicker();
   resize();
+  bindPhotoRebake();
   mount.classList.add("is-peeled");
   ensureTicker();
 
@@ -523,7 +520,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   ro.observe(track);
 
   scroller.addEventListener("scroll", onScroll, { passive: true });
-  scroller.addEventListener("pointermove", onCursorMove, { passive: true });
   document.fonts.ready.then(() => {
     bakeTextures();
   });
@@ -540,7 +536,6 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       }
       ro.disconnect();
       scroller.removeEventListener("scroll", onScroll);
-      scroller.removeEventListener("pointermove", onCursorMove);
       scroller.style.cursor = "";
       mount.classList.remove("is-peeled");
       clearLiveCards();
