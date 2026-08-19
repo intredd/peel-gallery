@@ -4,6 +4,14 @@ Infinite horizontal gallery with a WebGL shelf peel (three-shelf scale field + g
 
 **Live:** [intredd.github.io/peel-gallery](https://intredd.github.io/peel-gallery/)
 
+<p align="center">
+  <img
+    src="./assets/git-hero.webp"
+    alt="Peel Gallery — infinite strip, shelf peel warp, live scale map"
+    width="960"
+  />
+</p>
+
 ## Setup
 
 ```bash
