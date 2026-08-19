@@ -5,9 +5,10 @@ import {
 } from "./effects/shelf-envelope";
 import { bindGalleryScroll } from "./gallery/scroll";
 import { createWebGLShelf } from "./hosts/webgl-shelf";
-import { mountShelfTuner } from "./ui/shelf-tuner";
+import { loadShelfField, saveShelfField } from "./shelf-persist";
+import { mountShelfTuner, type ShelfTuner } from "./ui/shelf-tuner";
 
-/** Peel Gallery — infinite strip + WebGL shelf peel. */
+const STAGE_MODE = new URLSearchParams(location.search).has("stage");
 
 const shell = document.querySelector<HTMLElement>("[data-peel-root]");
 const scroller = document.querySelector<HTMLElement>("[data-gallery-scroller]");
@@ -43,7 +44,7 @@ const scroll = bindGalleryScroll(gallery, strip, {
   },
 });
 
-const shelfField: ShelfFieldParams = {
+const desktopShelfField: ShelfFieldParams = {
   innerPct: 25,
   shoulderPct: 45,
   vx1: 0.55,
@@ -53,6 +54,34 @@ const shelfField: ShelfFieldParams = {
   maxScale: 1,
   minScale: 0.65,
 };
+
+const MOBILE_MQ = window.matchMedia("(max-width: 720px)");
+
+const mobileShelfField: ShelfFieldParams = {
+  innerPct: 58,
+  shoulderPct: 72,
+  vx1: 0.62,
+  vy1: 0,
+  vx2: -0.55,
+  vy2: 0,
+  maxScale: 1,
+  minScale: 0.9,
+};
+
+const shelfField: ShelfFieldParams = { ...desktopShelfField };
+
+if (STAGE_MODE) {
+  document.documentElement.classList.add("is-stage");
+  const savedField = loadShelfField();
+  if (savedField) Object.assign(shelfField, savedField);
+}
+
+function applyShelfPreset(mobile: boolean) {
+  if (STAGE_MODE) return;
+  Object.assign(shelfField, mobile ? mobileShelfField : desktopShelfField);
+}
+
+let tuner: ShelfTuner | null = null;
 
 function cardsInViewport() {
   const scrollLeft = Math.round(gallery.scrollLeft);
@@ -85,14 +114,35 @@ const peel = createWebGLShelf({
   hitModel,
 });
 
-const tuner = mountShelfTuner(shelfField, {
-  onChange: () => peel.requestFrame(),
-});
+function syncTuner() {
+  if (STAGE_MODE || MOBILE_MQ.matches) {
+    tuner?.destroy();
+    tuner = null;
+    return;
+  }
+  if (!tuner) {
+    tuner = mountShelfTuner(shelfField, {
+      onChange: () => {
+        saveShelfField(shelfField);
+        peel.requestFrame();
+      },
+    });
+  }
+}
+
+function syncMobileLayout() {
+  applyShelfPreset(MOBILE_MQ.matches);
+  syncTuner();
+  peel.requestFrame();
+}
+
+syncMobileLayout();
+MOBILE_MQ.addEventListener("change", syncMobileLayout);
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     peel.destroy();
     scroll.destroy();
-    tuner.destroy();
+    tuner?.destroy();
   });
 }
