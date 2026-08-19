@@ -26,6 +26,124 @@ export function measurePaintTextWidth(node: HTMLElement): number {
   return ctx.measureText(node.textContent?.trim() ?? "").width;
 }
 
+export type PeelSelectionRect = {
+  left: number;
+  top: number;
+  w: number;
+  h: number;
+};
+
+export type PeelTextSelection = {
+  node: HTMLElement;
+  rects: PeelSelectionRect[];
+};
+
+function textOffsetInElement(element: HTMLElement, container: Node, offset: number): number {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.setEnd(container, offset);
+  return range.toString().length;
+}
+
+function parseLineHeight(raw: string, fontSize: number): number {
+  if (!raw || raw === "normal") return fontSize * 1.2;
+  if (raw.endsWith("px")) return parseFloat(raw) || fontSize;
+  const unitless = parseFloat(raw);
+  return Number.isFinite(unitless) ? unitless * fontSize : fontSize;
+}
+
+function peelSelectionColor(): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue("--peel-selection").trim();
+  return v || "rgb(0 122 255 / 0.45)";
+}
+
+function selectionLineRect(
+  node: HTMLElement,
+  box: { left: number; top: number; w: number; h: number },
+  x0: number,
+  glyphW: number,
+): PeelSelectionRect {
+  const cs = getComputedStyle(node);
+  const fontSize = parseFloat(cs.fontSize) || 16;
+  const lineHeight = parseLineHeight(cs.lineHeight, fontSize);
+  const padX = Math.max(2, Math.round(fontSize * 0.07));
+  const baselineY = box.top + box.h;
+
+  return {
+    left: box.left + x0 - padX,
+    top: baselineY - lineHeight,
+    w: glyphW + padX * 2,
+    h: lineHeight,
+  };
+}
+
+function rangeIntersectsNode(range: Range, node: HTMLElement): boolean {
+  const nodeRange = document.createRange();
+  nodeRange.selectNodeContents(node);
+  return (
+    range.compareBoundaryPoints(Range.END_TO_START, nodeRange) < 0 &&
+    range.compareBoundaryPoints(Range.START_TO_END, nodeRange) > 0
+  );
+}
+
+function selectionOffsetsInTextNode(
+  node: HTMLElement,
+  range: Range,
+): { a: number; b: number } | null {
+  if (!rangeIntersectsNode(range, node)) return null;
+
+  const text = node.textContent ?? "";
+  const nodeRange = document.createRange();
+  nodeRange.selectNodeContents(node);
+
+  let a = 0;
+  let b = text.length;
+
+  if (range.compareBoundaryPoints(Range.START_TO_START, nodeRange) > 0) {
+    a = textOffsetInElement(node, range.startContainer, range.startOffset);
+  }
+  if (range.compareBoundaryPoints(Range.END_TO_END, nodeRange) < 0) {
+    b = textOffsetInElement(node, range.endContainer, range.endOffset);
+  }
+
+  a = Math.max(0, Math.min(a, text.length));
+  b = Math.max(0, Math.min(b, text.length));
+  if (a >= b) return null;
+  return { a, b };
+}
+
+export function selectionRectsInTextNode(
+  node: HTMLElement,
+  shot: HTMLElement,
+  range: Range,
+): PeelSelectionRect[] {
+  const span = selectionOffsetsInTextNode(node, range);
+  if (!span) return [];
+
+  const text = node.textContent ?? "";
+  const box = peelTextLayoutBox(node, shot);
+  const ctx = captionMeasureContext();
+  applyPaintFont(ctx, node);
+  const x0 = ctx.measureText(text.slice(0, span.a)).width;
+  const w = ctx.measureText(text.slice(span.a, span.b)).width;
+  if (w < 0.5) return [];
+  return [selectionLineRect(node, box, x0, w)];
+}
+
+export function buildShotTextSelection(shot: HTMLElement, range?: Range): PeelTextSelection[] {
+  const sel = document.getSelection();
+  const activeRange =
+    range ?? (sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null);
+  if (!activeRange) return [];
+
+  const out: PeelTextSelection[] = [];
+  for (const node of shot.querySelectorAll<HTMLElement>("[data-peel-text]")) {
+    const rects = selectionRectsInTextNode(node, shot, activeRange);
+    if (rects.length) out.push({ node, rects });
+  }
+  return out;
+}
+
 // Peel-text box in shot-local px.
 export function peelTextLayoutBox(node: HTMLElement, shot: HTMLElement) {
   let left = 0;
@@ -37,7 +155,28 @@ export function peelTextLayoutBox(node: HTMLElement, shot: HTMLElement) {
     cur = cur.offsetParent instanceof HTMLElement ? cur.offsetParent : null;
   }
   const w = Math.max(measurePaintTextWidth(node), 1);
+  if (node.classList.contains("shot__index")) {
+    const cs = getComputedStyle(node);
+    const fontSize = parseFloat(cs.fontSize) || 11;
+    const lineHeight =
+      !cs.lineHeight || cs.lineHeight === "normal"
+        ? fontSize * 1.2
+        : cs.lineHeight.endsWith("px")
+          ? parseFloat(cs.lineHeight) || fontSize
+          : fontSize * parseFloat(cs.lineHeight);
+    return { left, top, w, h: lineHeight };
+  }
   return { left, top, w, h: Math.max(node.offsetHeight, 1) };
+}
+
+function paintSelectionLayer(ctx: CanvasRenderingContext2D, selection?: PeelTextSelection[]) {
+  if (!selection?.length) return;
+  ctx.fillStyle = peelSelectionColor();
+  for (const { rects } of selection) {
+    for (const r of rects) {
+      ctx.fillRect(r.left, r.top, r.w, r.h);
+    }
+  }
 }
 
 function paintPeelTextLayer(ctx: CanvasRenderingContext2D, el: HTMLElement) {
@@ -114,7 +253,11 @@ async function readyPhoto(img: HTMLImageElement) {
   await img.decode();
 }
 
-export async function paintShotTile(el: HTMLElement, dpr = 1): Promise<HTMLCanvasElement> {
+export async function paintShotTile(
+  el: HTMLElement,
+  dpr = 1,
+  selection?: PeelTextSelection[],
+): Promise<HTMLCanvasElement> {
   const cssW = Math.max(1, Math.ceil(el.offsetWidth));
   const cssH = Math.max(1, Math.ceil(el.offsetHeight));
   const scale = Math.max(1, Math.min(dpr, 2));
@@ -146,6 +289,7 @@ export async function paintShotTile(el: HTMLElement, dpr = 1): Promise<HTMLCanva
     paintTextScrim(ctx, w, h);
   }
 
+  paintSelectionLayer(ctx, selection);
   paintPeelTextLayer(ctx, el);
 
   return canvas;

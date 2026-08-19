@@ -3,6 +3,7 @@
   --ink: #14161a;
   --mute: #5c636e;
   --accent: #0f6e6a;
+  --peel-selection: rgb(0 122 255 / 0.45);
   --line: #d4d8de;
   --gallery-pad: clamp(32px, 6vw, 96px);
   --slide-gap: clamp(28px, 4vw, 64px);
@@ -116,9 +117,14 @@ body {
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live {
   visibility: hidden;
   pointer-events: none;
-  user-select: none;
-  -webkit-user-select: none;
+  user-select: text;
+  -webkit-user-select: text;
   overflow: visible;
+}
+
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live .shot__photo {
+  user-select: auto;
+  -webkit-user-select: auto;
 }
 
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text] {
@@ -130,14 +136,27 @@ body {
   max-width: 100%;
   line-height: 1;
   color: transparent;
+  -webkit-text-fill-color: transparent;
   cursor: text;
+  caret-color: transparent;
+  -webkit-tap-highlight-color: transparent;
   will-change: transform;
 }
 
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text]::selection,
-.gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text]::-moz-selection {
-  color: #fff;
-  background: rgb(220 38 38 / 0.92);
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text] *::selection {
+  color: transparent;
+  background: transparent;
+  background-color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+}
+
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text]::-moz-selection,
+.gallery-shell.is-peeled [data-peel-track] .shot.is-live [data-peel-text] *::-moz-selection {
+  color: transparent;
+  background: transparent;
+  text-shadow: none;
 }
 
 .gallery-shell.is-peeled [data-peel-track] .shot.is-live:focus-within [data-peel-text]:focus-visible {

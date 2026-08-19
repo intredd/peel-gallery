@@ -1,4 +1,9 @@
-import { paintShotTile, peelTextLayoutBox } from "../core/shot-paint";
+import {
+  buildShotTextSelection,
+  paintShotTile,
+  peelTextLayoutBox,
+  type PeelTextSelection,
+} from "../core/shot-paint";
 import { addTicker, prepareTicker, removeTicker } from "../core/loop";
 import type { PeelHost } from "../core/types";
 import {
@@ -216,6 +221,7 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   const quad = new Float32Array(8);
 
   const textures = new Map<string, WebGLTexture>();
+  const selectionTextures = new Map<string, WebGLTexture>();
   const liveCards = new Set<HTMLElement>();
   let lastPacked: PackedCard[] = [];
   let centerEl: HTMLElement | null = null;
@@ -244,6 +250,10 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       if (!tex) throw new Error("WebGL: texture failed");
       textures.set(key, tex);
     }
+    bindTextureSource(tex, source);
+  }
+
+  function bindTextureSource(tex: WebGLTexture, source: HTMLCanvasElement) {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -251,6 +261,111 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+  }
+
+  function uploadSelectionTexture(key: string, source: HTMLCanvasElement) {
+    let tex = selectionTextures.get(key);
+    if (!tex) {
+      tex = gl.createTexture();
+      if (!tex) throw new Error("WebGL: texture failed");
+      selectionTextures.set(key, tex);
+    }
+    bindTextureSource(tex, source);
+  }
+
+  function clearSelectionTextures(keep = new Set<string>()) {
+    for (const [key, tex] of selectionTextures) {
+      if (keep.has(key)) continue;
+      gl.deleteTexture(tex);
+      selectionTextures.delete(key);
+    }
+  }
+
+  function bakeSourceForKey(key: string): HTMLElement | null {
+    for (const node of track.children) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.hasAttribute("data-loop-clone")) continue;
+      if (shotKey(node) === key) return node;
+    }
+    return null;
+  }
+
+  let selectedKey: string | null = null;
+  let selectedParts: PeelTextSelection[] | null = null;
+  let selectionRaf = 0;
+  let selectionPersistScroll = false;
+  let peelTextDown: { x: number; y: number } | null = null;
+  let peelTextDownShot: HTMLElement | null = null;
+
+  function isPeelTextSelection(sel: Selection | null): boolean {
+    if (!sel?.anchorNode) return false;
+    const el =
+      sel.anchorNode instanceof HTMLElement ? sel.anchorNode : sel.anchorNode.parentElement;
+    return !!el?.closest("[data-peel-track] [data-peel-text]");
+  }
+
+  function clearPeelSelection() {
+    selectionPersistScroll = false;
+    peelTextDownShot = null;
+    document.getSelection()?.removeAllRanges();
+    if (!selectedKey) return;
+    selectedKey = null;
+    selectedParts = null;
+    clearSelectionTextures();
+    markDirty();
+  }
+
+  function rebakeSelectedKey() {
+    if (!selectedKey || !selectedParts?.length) return;
+    const source = bakeSourceForKey(selectedKey);
+    if (!source) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    void paintShotTile(source, dpr, selectedParts).then((canvas) => {
+      uploadSelectionTexture(selectedKey!, canvas);
+      markDirty();
+    });
+  }
+
+  function syncSelectionTextures() {
+    const prevKey = selectedKey;
+    const sel = document.getSelection();
+
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      selectionPersistScroll = false;
+      const anchor = sel.anchorNode;
+      const shot =
+        anchor instanceof HTMLElement
+          ? anchor.closest<HTMLElement>(".shot")
+          : (anchor?.parentElement?.closest<HTMLElement>(".shot") ?? null);
+
+      if (shot?.classList.contains("is-live")) {
+        const parts = buildShotTextSelection(shot);
+        if (parts.length) {
+          selectedKey = shotKey(shot);
+          selectedParts = parts;
+        }
+      }
+    } else if (!isPeelTextSelection(sel)) {
+      selectedKey = null;
+      selectedParts = null;
+    }
+
+    const keep = selectedKey ? new Set([selectedKey]) : new Set<string>();
+    clearSelectionTextures(keep);
+
+    if (selectedKey && selectedParts) {
+      rebakeSelectedKey();
+    } else if (prevKey) {
+      markDirty();
+    }
+  }
+
+  function onSelectionChange() {
+    if (selectionRaf) return;
+    selectionRaf = requestAnimationFrame(() => {
+      selectionRaf = 0;
+      syncSelectionTextures();
+    });
   }
 
   function bakeTextures() {
@@ -335,6 +450,27 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
     centerEl.classList.add("is-center");
   }
 
+  function shotFromSelection(sel: Selection | null): HTMLElement | null {
+    if (!sel?.anchorNode) return null;
+    const anchor = sel.anchorNode;
+    return (
+      anchor instanceof HTMLElement
+        ? anchor.closest<HTMLElement>(".shot")
+        : anchor.parentElement?.closest<HTMLElement>(".shot")
+    ) ?? null;
+  }
+
+  function shouldFreezePeelDom(el: HTMLElement): boolean {
+    if (peelTextDownShot === el) return true;
+    if (selectedKey !== null && shotKey(el) === selectedKey) return true;
+    const sel = document.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      return shotFromSelection(sel) === el;
+    }
+    if (isPeelTextSelection(sel) && shotFromSelection(sel) === el) return true;
+    return false;
+  }
+
   function syncLiveCards(packed: PackedCard[]) {
     const nextLive = new Set<HTMLElement>();
 
@@ -342,6 +478,12 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       const el = item.card.el;
       const textNodes = el.querySelectorAll<HTMLElement>(PEEL_TEXT_SELECTOR);
       if (!textNodes.length) continue;
+
+      if (shouldFreezePeelDom(el)) {
+        el.classList.add("is-live");
+        nextLive.add(el);
+        continue;
+      }
 
       let synced = false;
       for (const node of textNodes) {
@@ -394,7 +536,9 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function drawCard(item: PackedCard) {
-    const tex = textures.get(shotKey(item.card.el));
+    const key = shotKey(item.card.el);
+    const tex =
+      selectedKey === key ? (selectionTextures.get(key) ?? textures.get(key)) : textures.get(key);
     if (!tex) return;
 
     const { card, cx, cy, tx, sL, sR } = item;
@@ -502,7 +646,37 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   }
 
   function onScroll() {
+    selectionPersistScroll = true;
     markDirty();
+  }
+
+  function onGalleryClick(e: MouseEvent) {
+    if (!(e.target instanceof Element)) return;
+    if (e.target.closest("[data-peel-track] [data-peel-text]")) return;
+    clearPeelSelection();
+  }
+
+  function onTrackPointerDown(e: PointerEvent) {
+    if (!(e.target instanceof Element)) return;
+    if (!e.target.closest("[data-peel-track] [data-peel-text]")) return;
+    selectionPersistScroll = false;
+    peelTextDown = { x: e.clientX, y: e.clientY };
+    peelTextDownShot = e.target.closest<HTMLElement>(".shot");
+  }
+
+  function onTrackPointerUp(e: PointerEvent) {
+    peelTextDownShot = null;
+    if (!peelTextDown) return;
+    const dx = e.clientX - peelTextDown.x;
+    const dy = e.clientY - peelTextDown.y;
+    peelTextDown = null;
+    if (dx * dx + dy * dy > 16) return;
+    if (!(e.target instanceof Element)) return;
+    if (!e.target.closest("[data-peel-track] [data-peel-text]")) return;
+    requestAnimationFrame(() => {
+      const sel = document.getSelection();
+      if (sel?.isCollapsed) clearPeelSelection();
+    });
   }
 
   function onRootResize() {
@@ -520,6 +694,11 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
   ro.observe(track);
 
   scroller.addEventListener("scroll", onScroll, { passive: true });
+  scroller.addEventListener("click", onGalleryClick, true);
+  track.addEventListener("pointerdown", onTrackPointerDown, true);
+  track.addEventListener("pointerup", onTrackPointerUp, true);
+  track.addEventListener("pointercancel", onTrackPointerUp, true);
+  document.addEventListener("selectionchange", onSelectionChange);
   document.fonts.ready.then(() => {
     bakeTextures();
   });
@@ -536,6 +715,15 @@ export function createWebGLShelf(options: WebGLShelfOptions): PeelHost {
       }
       ro.disconnect();
       scroller.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("click", onGalleryClick, true);
+      track.removeEventListener("pointerdown", onTrackPointerDown, true);
+      track.removeEventListener("pointerup", onTrackPointerUp, true);
+      track.removeEventListener("pointercancel", onTrackPointerUp, true);
+      document.removeEventListener("selectionchange", onSelectionChange);
+      if (selectionRaf) cancelAnimationFrame(selectionRaf);
+      selectedKey = null;
+      selectedParts = null;
+      clearSelectionTextures();
       scroller.style.cursor = "";
       mount.classList.remove("is-peeled");
       clearLiveCards();
